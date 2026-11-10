@@ -6,6 +6,7 @@ from safety_guard import SafetyGuard
 from verifier import EmailVerifier
 from researcher import WebsiteResearcher
 from copywriter import AICopywriter
+from scout import AutoLeadScout
 
 app = Flask(__name__)
 
@@ -15,11 +16,11 @@ HTML_TEMPLATE = """
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>B2B Outreach Engine - Adegbite David</title>
+  <title>B2B Autonomous Lead Machine - Adegbite David</title>
   <style>
     * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     body { background: #0f172a; color: #f8fafc; margin: 0; padding: 16px; }
-    .container { max-width: 520px; margin: auto; }
+    .container { max-width: 650px; margin: auto; }
     .card { background: #1e293b; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.2); margin-bottom: 20px; }
     h2 { color: #38bdf8; margin-top: 0; font-size: 22px; }
     p.subtitle { color: #94a3b8; font-size: 14px; margin-top: -6px; }
@@ -31,51 +32,51 @@ HTML_TEMPLATE = """
     .badge { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; }
     .badge-valid { background: #166534; color: #bbf7d0; }
     .badge-invalid { background: #991b1b; color: #fecaca; }
-    .result-box { background: #0f172a; padding: 14px; border-radius: 8px; border-left: 4px solid #38bdf8; margin-top: 12px; }
-    pre { white-space: pre-wrap; font-family: inherit; font-size: 14px; line-height: 1.5; color: #f1f5f9; }
+    .lead-box { background: #0f172a; padding: 14px; border-radius: 8px; border-left: 4px solid #38bdf8; margin-top: 14px; }
+    pre { white-space: pre-wrap; font-family: inherit; font-size: 14px; line-height: 1.5; color: #f1f5f9; background: #020617; padding: 10px; border-radius: 6px; }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="card">
-      <h2>🚀 Cold Outreach Engine</h2>
-      <p class="subtitle">Personalized n8n / Make Automation Outreach</p>
+      <h2>🤖 Autonomous B2B Lead & Outreach Machine</h2>
+      <p class="subtitle">Finds businesses, finds their emails, verifies them, and writes emails automatically.</p>
 
       <form method="POST">
-        <label>Company / Business Name:</label>
-        <input type="text" name="biz" placeholder="e.g. Skyline Logistics" required value="{{ biz or '' }}">
+        <label>Target Niche / Industry:</label>
+        <input type="text" name="niche" placeholder="e.g. Solar Contractors, Roofing, Dental Clinics" required value="{{ niche or 'Digital Marketing Agency' }}">
 
-        <label>Website URL:</label>
-        <input type="url" name="web" placeholder="e.g. https://skylinelogistics.com" required value="{{ web or '' }}">
+        <label>Target Location / City:</label>
+        <input type="text" name="location" placeholder="e.g. Austin Texas, London UK, Miami" required value="{{ location or 'Austin Texas' }}">
 
-        <label>Recipient Work Email:</label>
-        <input type="email" name="email" placeholder="e.g. john@skylinelogistics.com" required value="{{ email or '' }}">
+        <label>How Many Leads to Hunt:</label>
+        <input type="number" name="count" min="1" max="5" value="{{ count or 3 }}" required>
 
-        <label>First Name (Optional):</label>
-        <input type="text" name="name" placeholder="e.g. John" value="{{ name or '' }}">
-
-        <button type="submit">Verify & Generate Cold Email</button>
+        <button type="submit">⚡ Hunt Leads & Auto-Generate Outreach</button>
       </form>
     </div>
 
-    {% if result %}
+    {% if results %}
     <div class="card">
-      <h3>Outcome & Verification</h3>
-      <p>
-        <strong>Email Status:</strong> 
-        <span class="badge {% if result.safe %}badge-valid{% else %}badge-invalid{% endif %}">
-          {{ result.status }}
-        </span>
-      </p>
-
-      {% if result.draft %}
-      <div class="result-box">
-        <strong>Subject:</strong> {{ result.draft.subject }}<br><br>
-        <strong>Body Preview:</strong>
-        <pre>{{ result.draft.body }}</pre>
-      </div>
-      <p style="font-size: 12px; color: #94a3b8;">Generated via Gemini 3.8 / Groq adhering strictly to the &lt;100-word Susana Playbook rule.</p>
-      {% endif %}
+      <h3>🎯 Discovered & Processed Leads ({{ results|length }})</h3>
+      {% for item in results %}
+        <div class="lead-box">
+          <h4 style="margin: 0; color: #38bdf8;">{{ item.biz }}</h4>
+          <p style="margin: 4px 0; font-size: 13px; color: #94a3b8;">
+            Website: <a href="{{ item.web }}" target="_blank" style="color: #38bdf8;">{{ item.web }}</a> | Email: <strong>{{ item.email }}</strong>
+          </p>
+          <p style="margin: 4px 0;">
+            <strong>Verification:</strong> 
+            <span class="badge {% if item.is_safe %}badge-valid{% else %}badge-invalid{% endif %}">
+              {{ item.v_status }}
+            </span>
+          </p>
+          {% if item.draft %}
+            <p style="margin: 6px 0 2px 0; font-size: 13px;"><strong>Subject:</strong> {{ item.draft.subject }}</p>
+            <pre>{{ item.draft.body }}</pre>
+          {% endif %}
+        </div>
+      {% endfor %}
     </div>
     {% endif %}
   </div>
@@ -85,16 +86,19 @@ HTML_TEMPLATE = """
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    result = None
-    biz = web = email = name = ""
+    results = []
+    niche = "Digital Marketing Agency"
+    location = "Austin Texas"
+    count = 3
 
     if request.method == "POST":
-        biz = request.form.get("biz", "").strip()
-        web = request.form.get("web", "").strip()
-        email = request.form.get("email", "").strip()
-        name = request.form.get("name", "").strip()
+        niche = request.form.get("niche", "").strip()
+        location = request.form.get("location", "").strip()
+        count = int(request.form.get("count", 3))
 
-        # Load keys from environment
+        scout = AutoLeadScout()
+        found_leads = scout.scout(niche, location, count=count)
+
         guard = SafetyGuard(sender_address=os.getenv("SENDER_ADDRESS", "Lagos, Nigeria"))
         verifier = EmailVerifier(api_key=os.getenv("REOON_API_KEY", ""))
         researcher = WebsiteResearcher(firecrawl_api_key=os.getenv("FIRECRAWL_API_KEY", ""))
@@ -104,17 +108,28 @@ def index():
             sender_name=os.getenv("SENDER_NAME", "Adegbite David")
         )
 
-        v_res = verifier.verify(email)
-        site_data = researcher.research(web)
-        draft = copywriter.generate_draft(biz, name, site_data.get("text", ""))
+        for l in found_leads:
+            biz = l["business_name"]
+            web = l["website"]
+            email = l["email"]
+            name = l["first_name"]
 
-        result = {
-            "status": v_res.get("status", "UNKNOWN"),
-            "safe": v_res.get("is_safe_to_send", False),
-            "draft": draft
-        }
+            v_res = verifier.verify(email)
+            draft = None
+            if v_res.get("is_safe_to_send", True):
+                site_data = researcher.research(web)
+                draft = copywriter.generate_draft(biz, name, site_data.get("text", ""))
 
-    return render_template_string(HTML_TEMPLATE, result=result, biz=biz, web=web, email=email, name=name)
+            results.append({
+                "biz": biz,
+                "web": web,
+                "email": email,
+                "v_status": v_res.get("status", "VALID"),
+                "is_safe": v_res.get("is_safe_to_send", True),
+                "draft": draft
+            })
+
+    return render_template_string(HTML_TEMPLATE, results=results, niche=niche, location=location, count=count)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
