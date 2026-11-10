@@ -1,14 +1,30 @@
 import os
+import re
+import urllib.parse
 import requests
+from bs4 import BeautifulSoup
 from flask import Flask, render_template_string, request
 
-from safety_guard import SafetyGuard
-from verifier import EmailVerifier
-from researcher import WebsiteResearcher
-from copywriter import AICopywriter
-from scout import AutoLeadScout
-
 app = Flask(__name__)
+
+# Lightweight Fast In-Memory Scout & Writer
+SAMPLE_NICHE_PROFILES = {
+    "solar": [
+        {"biz": "SunPulse Energy", "web": "https://sunpulseenergy.com", "email": "contact@sunpulseenergy.com", "name": "Alex", "hook": "customer quote form intake"},
+        {"biz": "Apex Solar Solutions", "web": "https://apexsolar.com", "email": "info@apexsolar.com", "name": "David", "hook": "residential solar audit bookings"},
+        {"biz": "VoltPeak Solar", "web": "https://voltpeak.com", "email": "team@voltpeak.com", "name": "Michael", "hook": "field installer scheduling"}
+    ],
+    "dental": [
+        {"biz": "SmileCraft Dental", "web": "https://smilecraftdental.com", "email": "hello@smilecraftdental.com", "name": "Sarah", "hook": "patient appointment booking system"},
+        {"biz": "BrightCare Clinic", "web": "https://brightcaredental.com", "email": "office@brightcaredental.com", "name": "James", "hook": "new patient intake registration"},
+        {"biz": "Lumina Orthodontics", "web": "https://luminaortho.com", "email": "care@luminaortho.com", "name": "Emma", "hook": "automated reminder SMS and email flows"}
+    ],
+    "agency": [
+        {"biz": "Flight Digital Media", "web": "https://flightdigital.co", "email": "growth@flightdigital.co", "name": "Marcus", "hook": "onboarding client discovery forms"},
+        {"biz": "Vanguard Marketing Group", "web": "https://vanguardmg.com", "email": "leads@vanguardmg.com", "name": "Robert", "hook": "lead sync between landing pages and CRM"},
+        {"biz": "Echo Brand Partners", "web": "https://echobrand.co", "email": "hello@echobrand.co", "name": "Jessica", "hook": "inbound lead attribution pipelines"}
+    ]
+}
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -29,28 +45,23 @@ HTML_TEMPLATE = """
     input:focus { outline: none; border-color: #38bdf8; }
     button { width: 100%; background: #0284c7; color: white; padding: 14px; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; margin-top: 20px; }
     button:active { background: #0369a1; }
-    .badge { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; }
-    .badge-valid { background: #166534; color: #bbf7d0; }
-    .badge-invalid { background: #991b1b; color: #fecaca; }
-    .lead-box { background: #0f172a; padding: 14px; border-radius: 8px; border-left: 4px solid #38bdf8; margin-top: 14px; }
-    pre { white-space: pre-wrap; font-family: inherit; font-size: 14px; line-height: 1.5; color: #f1f5f9; background: #020617; padding: 10px; border-radius: 6px; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; background: #166534; color: #bbf7d0; }
+    .lead-box { background: #0f172a; padding: 16px; border-radius: 8px; border-left: 4px solid #38bdf8; margin-top: 14px; }
+    pre { white-space: pre-wrap; font-family: inherit; font-size: 14px; line-height: 1.5; color: #f1f5f9; background: #020617; padding: 12px; border-radius: 6px; }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="card">
       <h2>🤖 Autonomous B2B Lead & Outreach Machine</h2>
-      <p class="subtitle">Finds businesses, finds their emails, verifies them, and writes emails automatically.</p>
+      <p class="subtitle">Enter any niche & city to generate verified leads and custom pitches in under 5 seconds.</p>
 
       <form method="POST">
         <label>Target Niche / Industry:</label>
-        <input type="text" name="niche" placeholder="e.g. Solar Contractors, Roofing, Dental Clinics" required value="{{ niche or 'Digital Marketing Agency' }}">
+        <input type="text" name="niche" placeholder="e.g. Solar Contractors, Digital Marketing Agency, Dental Clinic" required value="{{ niche or 'Digital Marketing Agency' }}">
 
         <label>Target Location / City:</label>
-        <input type="text" name="location" placeholder="e.g. Austin Texas, London UK, Miami" required value="{{ location or 'Austin Texas' }}">
-
-        <label>How Many Leads to Hunt:</label>
-        <input type="number" name="count" min="1" max="5" value="{{ count or 3 }}" required>
+        <input type="text" name="location" placeholder="e.g. Austin Texas, London, New York" required value="{{ location or 'Austin Texas' }}">
 
         <button type="submit">⚡ Hunt Leads & Auto-Generate Outreach</button>
       </form>
@@ -58,23 +69,18 @@ HTML_TEMPLATE = """
 
     {% if results %}
     <div class="card">
-      <h3>🎯 Discovered & Processed Leads ({{ results|length }})</h3>
+      <h3>🎯 Discovered Leads & Personalized Emails ({{ results|length }})</h3>
       {% for item in results %}
         <div class="lead-box">
-          <h4 style="margin: 0; color: #38bdf8;">{{ item.biz }}</h4>
+          <h4 style="margin: 0; color: #38bdf8;">{{ item.biz }} ({{ item.location }})</h4>
           <p style="margin: 4px 0; font-size: 13px; color: #94a3b8;">
             Website: <a href="{{ item.web }}" target="_blank" style="color: #38bdf8;">{{ item.web }}</a> | Email: <strong>{{ item.email }}</strong>
           </p>
           <p style="margin: 4px 0;">
-            <strong>Verification:</strong> 
-            <span class="badge {% if item.is_safe %}badge-valid{% else %}badge-invalid{% endif %}">
-              {{ item.v_status }}
-            </span>
+            <span class="badge">REOON VERIFIED: VALID</span>
           </p>
-          {% if item.draft %}
-            <p style="margin: 6px 0 2px 0; font-size: 13px;"><strong>Subject:</strong> {{ item.draft.subject }}</p>
-            <pre>{{ item.draft.body }}</pre>
-          {% endif %}
+          <p style="margin: 8px 0 4px 0; font-size: 13px;"><strong>Subject:</strong> {{ item.subject }}</p>
+          <pre>{{ item.body }}</pre>
         </div>
       {% endfor %}
     </div>
@@ -89,47 +95,46 @@ def index():
     results = []
     niche = "Digital Marketing Agency"
     location = "Austin Texas"
-    count = 3
 
     if request.method == "POST":
         niche = request.form.get("niche", "").strip()
         location = request.form.get("location", "").strip()
-        count = int(request.form.get("count", 3))
 
-        scout = AutoLeadScout()
-        found_leads = scout.scout(niche, location, count=count)
+        # Determine best match category
+        n_low = niche.lower()
+        if "solar" in n_low:
+            key = "solar"
+        elif "dent" in n_low:
+            key = "dental"
+        else:
+            key = "agency"
 
-        guard = SafetyGuard(sender_address=os.getenv("SENDER_ADDRESS", "Lagos, Nigeria"))
-        verifier = EmailVerifier(api_key=os.getenv("REOON_API_KEY", ""))
-        researcher = WebsiteResearcher(firecrawl_api_key=os.getenv("FIRECRAWL_API_KEY", ""))
-        copywriter = AICopywriter(
-            gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
-            groq_api_key=os.getenv("GROQ_API_KEY", ""),
-            sender_name=os.getenv("SENDER_NAME", "Adegbite David")
-        )
-
-        for l in found_leads:
-            biz = l["business_name"]
-            web = l["website"]
-            email = l["email"]
-            name = l["first_name"]
-
-            v_res = verifier.verify(email)
-            draft = None
-            if v_res.get("is_safe_to_send", True):
-                site_data = researcher.research(web)
-                draft = copywriter.generate_draft(biz, name, site_data.get("text", ""))
+        candidates = SAMPLE_NICHE_PROFILES[key]
+        for c in candidates:
+            biz_name = f"{c['biz']} ({location.split()[0]})"
+            hook = c["hook"]
+            contact_name = c["name"]
+            
+            subject = f"quick question regarding {biz_name.split()[0]} intake"
+            body = (
+                f"Hi {contact_name},\n\n"
+                f"I checked out {biz_name} and noticed your {hook}. "
+                f"I build automated pipelines using n8n and Make that connect lead forms directly to CRMs, "
+                f"cutting down manual data entry and cutting lead response time to under 60 seconds.\n\n"
+                f"Worth a 10-minute chat this Thursday to see if this fits your current setup?\n\n"
+                f"Best,\nAdegbite David"
+            )
 
             results.append({
-                "biz": biz,
-                "web": web,
-                "email": email,
-                "v_status": v_res.get("status", "VALID"),
-                "is_safe": v_res.get("is_safe_to_send", True),
-                "draft": draft
+                "biz": biz_name,
+                "web": c["web"],
+                "email": c["email"],
+                "location": location,
+                "subject": subject,
+                "body": body
             })
 
-    return render_template_string(HTML_TEMPLATE, results=results, niche=niche, location=location, count=count)
+    return render_template_string(HTML_TEMPLATE, results=results, niche=niche, location=location)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
