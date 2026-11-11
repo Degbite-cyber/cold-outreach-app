@@ -20,12 +20,6 @@ HEADERS = {
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 
 def auto_discover_company(company_name: str):
-    """
-    Given ONLY a company name (e.g. 'Apex Roofing Austin' or 'Flight Digital Agency'):
-    1. Finds their real website URL automatically.
-    2. Scrapes the website to find their public contact/decision-maker email.
-    3. Guesses a clean first name.
-    """
     clean_name = company_name.strip()
     query = f'"{clean_name}" official website'
     search_url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
@@ -50,12 +44,10 @@ def auto_discover_company(company_name: str):
         pass
 
     if not website:
-        # Fallback domain guess
         slug = re.sub(r'[^a-zA-Z0-9]', '', clean_name.lower().split()[0])
         website = f"https://{slug}.com"
 
-    # Scrape website for contact email
-    pages = [website, f"{website}/contact", f"{website}/about"]
+    pages = [website, f"{website}/contact", f"{website}/about", f"{website}/team"]
     found_emails = set()
     for p in pages:
         try:
@@ -77,10 +69,21 @@ def auto_discover_company(company_name: str):
     else:
         first_name = "Team"
 
+    domain_only = urllib.parse.urlparse(website).netloc.replace("www.", "")
+
+    # Susana Playbook Ch. 4 Free Search Links for the real decision maker:
+    google_founder_search = f"https://www.google.com/search?q={urllib.parse.quote(f'site:linkedin.com/in (founder OR owner OR CEO) \"{clean_name}\"')}"
+    google_email_pattern_search = f"https://www.google.com/search?q={urllib.parse.quote(f'\"@{domain_only}\" email OR contact')}"
+    hunter_lookup_url = f"https://hunter.io/try/search/{domain_only}"
+
     return {
         "website": website,
         "email": discovered_email,
-        "first_name": first_name
+        "first_name": first_name,
+        "domain": domain_only,
+        "founder_search_url": google_founder_search,
+        "email_pattern_search_url": google_email_pattern_search,
+        "hunter_lookup_url": hunter_lookup_url
     }
 
 HTML_TEMPLATE = """
@@ -93,7 +96,7 @@ HTML_TEMPLATE = """
   <style>
     * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     body { background: #0f172a; color: #f8fafc; margin: 0; padding: 16px; }
-    .container { max-width: 550px; margin: auto; }
+    .container { max-width: 580px; margin: auto; }
     .card { background: #1e293b; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.2); margin-bottom: 20px; }
     h2 { color: #38bdf8; margin-top: 0; font-size: 22px; }
     p.subtitle { color: #94a3b8; font-size: 14px; margin-top: -6px; }
@@ -106,6 +109,8 @@ HTML_TEMPLATE = """
     .badge-valid { background: #166534; color: #bbf7d0; }
     .badge-invalid { background: #991b1b; color: #fecaca; }
     .auto-badge { background: #1e3a8a; color: #93c5fd; padding: 3px 8px; border-radius: 4px; font-size: 11px; margin-left: 6px; }
+    .helper-box { background: #1e1b4b; border: 1px solid #4338ca; border-radius: 8px; padding: 12px; margin: 12px 0; font-size: 13px; line-height: 1.5; color: #e0e7ff; }
+    .helper-box a { color: #38bdf8; font-weight: 600; text-decoration: underline; margin-right: 12px; display: inline-block; }
     .alert-success { background: #064e3b; border: 1px solid #059669; color: #a7f3d0; padding: 12px; border-radius: 8px; margin-bottom: 16px; }
     .alert-error { background: #7f1d1d; border: 1px solid #dc2626; color: #fecaca; padding: 12px; border-radius: 8px; margin-bottom: 16px; }
   </style>
@@ -120,11 +125,11 @@ HTML_TEMPLATE = """
 
     <div class="card">
       <h2>⚡ 1-Click Smart Outreach</h2>
-      <p class="subtitle">Just enter the company name. The app finds the website, email, and drafts the pitch automatically.</p>
+      <p class="subtitle">Enter the company name. The app scouts their site and drafts a customized pitch.</p>
 
       <form method="POST" action="/search">
-        <label>Company / Business Name (That's all you need!):</label>
-        <input type="text" name="biz" placeholder="e.g. Apex Roofing Austin, Flight Digital Agency" required value="{{ biz or '' }}">
+        <label>Company / Business Name:</label>
+        <input type="text" name="biz" placeholder="e.g. JTR Construction, Flight Digital" required value="{{ biz or '' }}">
 
         <button type="submit" class="btn-search">🔎 Auto-Find & Generate Outreach</button>
       </form>
@@ -138,16 +143,25 @@ HTML_TEMPLATE = """
         <label>Company Name:</label>
         <input type="text" name="biz" value="{{ biz }}" readonly>
 
-        <label>Discovered Website: <span class="auto-badge">Auto-Found</span></label>
+        <label>Discovered Website:</label>
         <input type="url" name="web" value="{{ web }}" required>
 
-        <label>Target Email: <span class="auto-badge">Auto-Found</span></label>
+        <label>Target Email (Editable):</label>
         <input type="email" name="to_email" value="{{ email }}" required>
 
         <p style="margin: 8px 0;">
           <strong>Reoon Status:</strong> 
           <span class="badge {% if is_safe %}badge-valid{% else %}badge-invalid{% endif %}">{{ v_status }}</span>
         </p>
+
+        <!-- 1-Click Decision-Maker Radar (Susana Playbook Prompt 4F) -->
+        <div class="helper-box">
+          <strong>🔍 Find Real Decision-Maker / Fix Invalid Email (1-Click Free):</strong><br>
+          <a href="{{ founder_search_url }}" target="_blank">1. Find Owner on LinkedIn</a>
+          <a href="{{ hunter_lookup_url }}" target="_blank">2. Hunter.io Free Lookup</a>
+          <a href="{{ email_pattern_search_url }}" target="_blank">3. Google Email Formats</a>
+          <br><span style="color: #94a3b8; font-size: 11px;">If the auto-found email is invalid, click above to copy the owner's exact email and paste it in the box above!</span>
+        </div>
 
         <label>Subject Line:</label>
         <input type="text" name="subject" value="{{ draft.subject }}" required>
@@ -172,17 +186,14 @@ def home():
 def search():
     biz = request.form.get("biz", "").strip()
     
-    # 1. AUTO-FIND WEBSITE & EMAIL FROM JUST THE NAME
     discovered = auto_discover_company(biz)
     web = discovered["website"]
     email = discovered["email"]
     name = discovered["first_name"]
 
-    # 2. VERIFY EMAIL
     verifier = EmailVerifier(api_key=os.getenv("REOON_API_KEY", ""))
     v_res = verifier.verify(email)
 
-    # 3. RESEARCH & DRAFT WITH GEMINI
     researcher = WebsiteResearcher(firecrawl_api_key=os.getenv("FIRECRAWL_API_KEY", ""))
     site_data = researcher.research(web)
 
@@ -200,6 +211,9 @@ def search():
         email=email,
         v_status=v_res.get("status", "VALID"),
         is_safe=v_res.get("is_safe_to_send", True),
+        founder_search_url=discovered["founder_search_url"],
+        hunter_lookup_url=discovered["hunter_lookup_url"],
+        email_pattern_search_url=discovered["email_pattern_search_url"],
         draft=draft
     )
 
