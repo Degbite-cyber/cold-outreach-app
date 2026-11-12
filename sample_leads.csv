@@ -1,4 +1,15 @@
-business_name,website,first_name,email,country,timezone
-Apex Real Estate,https://example.com,Marcus,marcus@apexrealtyny.com,US,America/New_York
-BlueWave Dental,https://example.com,Sarah,info@bluewavedental.com,US,America/Chicago
-Prime Logistics,https://example.com,David,adegbiteishola001@gmail.com,US,America/New_York
+business_name,website,first_name,email,country,timezone,title
+Known Digital Marketing,https://getfoundbeknown.com,Jeff,jeff.stolbom@getfoundbeknown.com,US,America/New_York,Business Owner
+Ozle,https://stevesbizblog.com,Steve,steve@ozle.com,US,America/Chicago,Owner
+Four Chord Digital Marketing,https://fourchord.com,Peter,peter@fourchord.com,US,America/Los_Angeles,Owner
+D-BAT Academies,https://dbat.com,Michael,michaelb@dbat.net,US,America/Chicago,Owner/Business Manager
+Digital Marketing Solutions,https://digitalmarketingsolutions.com,Phillip,phillip@digitalmarketingsolutions.com,US,America/New_York,Chief Software Engineer and Owner
+Calibrate Digital Marketing,https://calibratedigitalmarketing.com,Brian,brian@calibrateyourads.com,US,America/Chicago,Owner
+Legacy Digital Marketing,https://legacydigital.marketing,Aaron,aaron@legacydigital.marketing,US,America/New_York,Business Owner
+fwd digital marketing,https://fwddigital.marketing,Ashley,ashley@fwd.work,US,America/Chicago,Owner
+E-agle Digital Marketing,https://e-agle.it,Raffaele,raffaele@e-agle.it,Italy,Europe/Rome,Owner
+HadlBran Digital Marketing,https://hadlbran.com,Michael,michael@hadlbran.com,US,America/Chicago,Owner
+Kaizen Digital Marketing Group,https://kaizendmg.com,Kate,kate@kaizendmg.com,US,America/Chicago,Owner
+Sans Terra Digital Marketing,https://sansterra.com,Brandy,brandy@sansterra.com,US,America/Chicago,Owner
+Techna Digital Marketing,https://technadigital.com,Dabina,dabina@technadigital.com,US,America/Los_Angeles,CEO/Owner
+Aspire Digital Marketing,https://aspiredigitalmarketing.com,Meyer,meyer@aspiredigitalmarketing.com,US,America/New_York,Business Owner
