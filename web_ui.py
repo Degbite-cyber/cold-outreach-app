@@ -1,170 +1,377 @@
-import os
-import csv
-from flask import Flask, render_template_string, request
+"""
+Cold Outreach Web App - Final Version
+Uses Gmail Compose URL (no SMTP needed - works on Render free tier)
+Author: Adegbite David
+"""
 
-from safety_guard import SafetyGuard
-from verifier import EmailVerifier
-from researcher import WebsiteResearcher
-from copywriter import AICopywriter
-from sender import GmailSender
-from scheduler import TimezoneScheduler
+from flask import Flask, request, jsonify, render_template_string
+import csv, os, json, urllib.parse, urllib.request
 
 app = Flask(__name__)
 
+# ── CONFIG ────────────────────────────────────────────────────────────────────
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "")
+SENDER_NAME    = os.environ.get("SENDER_NAME", "Adegbite David")
+SENDER_EMAIL   = os.environ.get("SENDER_EMAIL", "adegbiteishola001@gmail.com")
+SENDER_ADDRESS = os.environ.get("SENDER_ADDRESS", "Lagos, Nigeria")
+
+LEADS_FILE = os.path.join(os.path.dirname(__file__), "sample_leads.csv")
+
+# ── LOAD LEADS ────────────────────────────────────────────────────────────────
 def load_leads():
     leads = []
-    csv_path = "sample_leads.csv"
-    if os.path.exists(csv_path):
-        with open(csv_path, mode="r", encoding="utf-8") as f:
-            leads = list(csv.DictReader(f))
+    if not os.path.exists(LEADS_FILE):
+        return leads
+    with open(LEADS_FILE, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            email = row.get("email", "").strip()
+            if not email:
+                continue
+            # Filter generic/role addresses
+            blocked = ["info@","support@","sales@","hello@","admin@","contact@","noreply@","no-reply@","team@","help@"]
+            if any(email.lower().startswith(b) for b in blocked):
+                continue
+            leads.append({
+                "business_name": row.get("business_name","").strip(),
+                "website":       row.get("website","").strip(),
+                "first_name":    row.get("first_name","").strip(),
+                "email":         email,
+                "country":       row.get("country","US").strip(),
+                "timezone":      row.get("timezone","America/New_York").strip(),
+                "title":         row.get("title","Owner").strip(),
+            })
     return leads
 
-HTML_TEMPLATE = """
-<!DOCTYPE html>
+# ── GEMINI PITCH GENERATOR ────────────────────────────────────────────────────
+SUSANA_PROMPT = """You are a cold email copywriter following Susana Otokpa's $1K Client in 72 Hours Prompt Playbook.
+
+Write a cold email pitch for {sender_name} who offers n8n/Make.com/Zapier workflow automation services.
+
+Target: {first_name}, {title} at {business_name} ({website})
+
+STRICT RULES:
+1. Under 100 words body (excluding greeting and sign-off)
+2. NO em dashes (--) anywhere
+3. NO filler phrases: "I hope you are well", "I came across your profile", "I wanted to reach out"
+4. First sentence must reference something specific from their website or business type
+5. Second sentence shows what your automation solves for their exact workflow
+6. Third sentence gives a concrete time/money saving stat
+7. End with ONE low-friction question (not "Can we schedule a call?")
+8. Tone: direct, peer-to-peer, zero fluff
+
+Also write a subject line (under 8 words, no clickbait).
+
+Return ONLY valid JSON: {{"subject": "...", "body": "..."}}"""
+
+def generate_pitch_gemini(lead):
+    if not GEMINI_API_KEY:
+        return None, "GEMINI_API_KEY missing"
+    
+    prompt = SUSANA_PROMPT.format(
+        sender_name=SENDER_NAME,
+        first_name=lead["first_name"],
+        title=lead["title"],
+        business_name=lead["business_name"],
+        website=lead["website"]
+    )
+    
+    # Try models in order
+    models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-1.5-flash"]
+    
+    for model in models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+            payload = json.dumps({
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.7, "maxOutputTokens": 512}
+            }).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read())
+            raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            # Strip markdown code fences if present
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            result = json.loads(raw.strip())
+            return result, None
+        except Exception as e:
+            last_err = str(e)
+            continue
+    
+    return None, f"Gemini failed: {last_err}"
+
+def generate_pitch_groq(lead):
+    if not GROQ_API_KEY:
+        return None, "GROQ_API_KEY missing"
+    
+    prompt = SUSANA_PROMPT.format(
+        sender_name=SENDER_NAME,
+        first_name=lead["first_name"],
+        title=lead["title"],
+        business_name=lead["business_name"],
+        website=lead["website"]
+    )
+    
+    groq_models = ["llama3-70b-8192", "mixtral-8x7b-32768", "llama3-8b-8192"]
+    
+    for model in groq_models:
+        try:
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            payload = json.dumps({
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.7,
+                "max_tokens": 512
+            }).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {GROQ_API_KEY}"
+            })
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read())
+            raw = data["choices"][0]["message"]["content"].strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            result = json.loads(raw.strip())
+            return result, None
+        except Exception as e:
+            last_err = str(e)
+            continue
+    
+    return None, f"Groq failed: {last_err}"
+
+def generate_pitch(lead):
+    result, err = generate_pitch_gemini(lead)
+    if result:
+        return result, "gemini"
+    result, err2 = generate_pitch_groq(lead)
+    if result:
+        return result, "groq"
+    # Final fallback - template pitch
+    fallback = {
+        "subject": f"Quick automation idea for {lead['business_name']}",
+        "body": (
+            f"Hi {lead['first_name']},\n\n"
+            f"I noticed {lead['business_name']} handles client acquisition manually - "
+            f"an n8n workflow can automate your lead intake, CRM updates, and follow-up emails in one click.\n"
+            f"Most agency owners save 8-12 hours per week after setup.\n\n"
+            f"Would a 10-minute walkthrough make sense this week?\n\n"
+            f"Best,\n{SENDER_NAME}\n{SENDER_EMAIL}\n\n"
+            f"--\nThis email was sent from {SENDER_ADDRESS}. "
+            f"Reply STOP to unsubscribe."
+        )
+    }
+    return fallback, "fallback"
+
+# ── CAN-SPAM FOOTER ───────────────────────────────────────────────────────────
+def add_footer(body, lead):
+    footer = (
+        f"\n\nBest,\n{SENDER_NAME}\n{SENDER_EMAIL}\n\n"
+        f"--\n"
+        f"You are receiving this because you are listed as {lead['title']} at {lead['business_name']}. "
+        f"Sent from {SENDER_ADDRESS}. "
+        f"Reply STOP to unsubscribe."
+    )
+    return body + footer
+
+# ── GMAIL COMPOSE URL ─────────────────────────────────────────────────────────
+def build_gmail_url(to_email, subject, body):
+    params = urllib.parse.urlencode({
+        "view": "cm",
+        "fs": "1",
+        "to": to_email,
+        "su": subject,
+        "body": body
+    })
+    return f"https://mail.google.com/mail/?{params}"
+
+# ── ROUTES ────────────────────────────────────────────────────────────────────
+@app.route("/")
+def index():
+    leads = load_leads()
+    return render_template_string(HTML_TEMPLATE, leads=leads, count=len(leads))
+
+@app.route("/generate", methods=["POST"])
+def generate():
+    data = request.json
+    idx = data.get("idx", 0)
+    leads = load_leads()
+    if idx >= len(leads):
+        return jsonify({"error": "Lead index out of range"}), 400
+    
+    lead = leads[idx]
+    result, source = generate_pitch(lead)
+    
+    subject = result.get("subject", f"Quick note for {lead['first_name']}")
+    body = result.get("body", "")
+    body_with_footer = add_footer(body, lead)
+    
+    gmail_url = build_gmail_url(lead["email"], subject, body_with_footer)
+    
+    return jsonify({
+        "subject": subject,
+        "body": body_with_footer,
+        "gmail_url": gmail_url,
+        "source": source,
+        "word_count": len(body.split())
+    })
+
+@app.route("/health")
+def health():
+    leads = load_leads()
+    return jsonify({
+        "status": "ok",
+        "leads_loaded": len(leads),
+        "gemini_key": bool(GEMINI_API_KEY),
+        "groq_key": bool(GROQ_API_KEY)
+    })
+
+# ── HTML TEMPLATE ─────────────────────────────────────────────────────────────
+HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>B2B Apollo Campaign Manager - Adegbite David</title>
-  <style>
-    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    body { background: #0f172a; color: #f8fafc; margin: 0; padding: 16px; }
-    .container { max-width: 720px; margin: auto; }
-    .card { background: #1e293b; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.2); margin-bottom: 20px; }
-    h2 { color: #38bdf8; margin-top: 0; font-size: 22px; }
-    p.subtitle { color: #94a3b8; font-size: 14px; margin-top: -6px; }
-    .lead-box { background: #0f172a; padding: 16px; border-radius: 8px; border-left: 4px solid #38bdf8; margin-top: 14px; }
-    button { padding: 10px 16px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 14px; margin-top: 8px; }
-    .btn-draft { background: #0284c7; color: white; }
-    .btn-send { background: #16a34a; color: white; }
-    .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
-    .badge-valid { background: #166534; color: #bbf7d0; }
-    .badge-invalid { background: #991b1b; color: #fecaca; }
-    textarea { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #334155; background: #020617; color: #f1f5f9; font-family: inherit; font-size: 13px; line-height: 1.5; margin-top: 6px; }
-    input[type="text"] { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #020617; color: white; font-size: 13px; margin-top: 4px; }
-    .alert-success { background: #064e3b; border: 1px solid #059669; color: #a7f3d0; padding: 12px; border-radius: 8px; margin-bottom: 16px; }
-    .alert-error { background: #7f1d1d; border: 1px solid #dc2626; color: #fecaca; padding: 12px; border-radius: 8px; margin-bottom: 16px; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Outreach Hub | Adegbite David</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:16px}
+  h1{color:#58a6ff;font-size:1.3rem;margin-bottom:4px}
+  .subtitle{color:#8b949e;font-size:.85rem;margin-bottom:20px}
+  .stats{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 16px;margin-bottom:20px;display:flex;gap:20px}
+  .stat{text-align:center}
+  .stat-num{font-size:1.4rem;font-weight:700;color:#58a6ff}
+  .stat-label{font-size:.75rem;color:#8b949e}
+  .lead-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px;margin-bottom:14px}
+  .lead-name{color:#58a6ff;font-size:1rem;font-weight:700;margin-bottom:4px}
+  .lead-meta{color:#8b949e;font-size:.8rem;margin-bottom:4px}
+  .lead-email{color:#3fb950;font-size:.82rem;margin-bottom:12px}
+  .btn{display:inline-block;padding:10px 18px;border-radius:6px;border:none;cursor:pointer;font-size:.88rem;font-weight:600;text-decoration:none;transition:opacity .2s}
+  .btn-generate{background:#1f6feb;color:#fff;width:100%;margin-bottom:10px}
+  .btn-send{background:#238636;color:#fff;width:100%;display:none;text-align:center}
+  .btn:hover{opacity:.85}
+  .pitch-box{display:none;margin-top:12px}
+  .pitch-label{font-size:.78rem;color:#8b949e;margin-bottom:4px}
+  .pitch-subject{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px;font-size:.85rem;color:#e6edf3;margin-bottom:10px;width:100%}
+  .pitch-body{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px;font-size:.83rem;color:#e6edf3;width:100%;height:160px;resize:vertical;white-space:pre-wrap}
+  .word-badge{font-size:.75rem;color:#8b949e;margin-top:4px}
+  .source-badge{font-size:.72rem;padding:2px 8px;border-radius:10px;margin-left:8px}
+  .source-gemini{background:#1f3a5f;color:#58a6ff}
+  .source-groq{background:#2d1f3f;color:#bc8cff}
+  .source-fallback{background:#3f2d1f;color:#d29922}
+  .loading{color:#8b949e;font-size:.85rem;text-align:center;padding:8px}
+  .error-msg{color:#f85149;font-size:.82rem;margin-top:8px}
+  .header-bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+  .upload-hint{background:#1c2a1e;border:1px solid #238636;border-radius:8px;padding:12px;margin-bottom:16px;font-size:.82rem;color:#3fb950}
+</style>
 </head>
 <body>
-  <div class="container">
-    {% if send_message %}
-      <div class="{% if send_success %}alert-success{% else %}alert-error{% endif %}">
-        {{ send_message }}
-      </div>
-    {% endif %}
-
-    <div class="card">
-      <h2>🎯 Active Campaign: Verified Decision-Makers ({{ leads|length }})</h2>
-      <p class="subtitle">Direct owners and founders from your Apollo list. Tap below to let Gemini write their pitch & send!</p>
-    </div>
-
-    {% for lead in leads %}
-      <div class="card" style="margin-bottom: 16px;">
-        <h3 style="margin: 0; color: #38bdf8;">{{ lead.business_name }}</h3>
-        <p style="margin: 4px 0; font-size: 14px;">
-          Owner/CEO: <strong>{{ lead.first_name }}</strong> ({{ lead.title }}) | 
-          Email: <span style="color: #38bdf8;">{{ lead.email }}</span>
-        </p>
-        <p style="margin: 4px 0; font-size: 13px; color: #94a3b8;">
-          Website: <a href="{{ lead.website }}" target="_blank" style="color: #94a3b8;">{{ lead.website }}</a> | Timezone: {{ lead.timezone }}
-        </p>
-
-        {% if lead.draft %}
-          <div class="lead-box">
-            <form method="POST" action="/send_email">
-              <input type="hidden" name="to_email" value="{{ lead.email }}">
-              <label style="font-size: 12px; color: #cbd5e1; font-weight: 600;">Subject Line:</label>
-              <input type="text" name="subject" value="{{ lead.draft.subject }}" required>
-
-              <label style="font-size: 12px; color: #cbd5e1; font-weight: 600; margin-top: 8px; display: block;">Personalized Pitch (&lt;100 words, no em dashes):</label>
-              <textarea name="body" rows="7" required>{{ lead.draft.body }}</textarea>
-
-              <button type="submit" class="btn-send">✉️ Send Live to {{ lead.first_name }} via Gmail</button>
-            </form>
-          </div>
-        {% else %}
-          <form method="POST" action="/generate_pitch">
-            <input type="hidden" name="biz" value="{{ lead.business_name }}">
-            <input type="hidden" name="name" value="{{ lead.first_name }}">
-            <input type="hidden" name="email" value="{{ lead.email }}">
-            <input type="hidden" name="website" value="{{ lead.website }}">
-            <button type="submit" class="btn-draft">⚡ Generate AI Pitch for {{ lead.first_name }}</button>
-          </form>
-        {% endif %}
-      </div>
-    {% endfor %}
+<div class="header-bar">
+  <div>
+    <h1>Outreach Hub</h1>
+    <div class="subtitle">Adegbite David | n8n / Make.com / Zapier Automation Services</div>
   </div>
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="stat-num">{{ count }}</div><div class="stat-label">Verified Leads</div></div>
+  <div class="stat"><div class="stat-num">0</div><div class="stat-label" id="sent-count">Sent Today</div></div>
+  <div class="stat"><div class="stat-num">Free</div><div class="stat-label">No SMTP Needed</div></div>
+</div>
+
+<div class="upload-hint">
+  How it works: Click Generate → review the AI pitch → click Send via Gmail → Gmail opens pre-filled → click Send. Done.
+</div>
+
+{% for lead in leads %}
+<div class="lead-card" id="card-{{ loop.index0 }}">
+  <div class="lead-name">{{ lead.business_name }}</div>
+  <div class="lead-meta">{{ lead.title }}: {{ lead.first_name }} | {{ lead.country }} | {{ lead.timezone }}</div>
+  <div class="lead-email">{{ lead.email }}</div>
+  
+  <button class="btn btn-generate" onclick="generatePitch({{ loop.index0 }})">
+    Generate AI Pitch for {{ lead.first_name }}
+  </button>
+  
+  <div class="pitch-box" id="pitch-{{ loop.index0 }}">
+    <div class="pitch-label">Subject Line <span class="source-badge" id="src-{{ loop.index0 }}"></span></div>
+    <input class="pitch-subject" id="subj-{{ loop.index0 }}" type="text" readonly>
+    
+    <div class="pitch-label" style="margin-top:10px">Personalized Pitch (under 100 words, no em dashes)</div>
+    <textarea class="pitch-body" id="body-{{ loop.index0 }}"></textarea>
+    <div class="word-badge" id="words-{{ loop.index0 }}"></div>
+    
+    <a class="btn btn-send" id="send-{{ loop.index0 }}" href="#" target="_blank">
+      Send Live to {{ lead.first_name }} via Gmail
+    </a>
+  </div>
+  
+  <div class="loading" id="loading-{{ loop.index0 }}" style="display:none">Writing pitch with AI...</div>
+  <div class="error-msg" id="err-{{ loop.index0 }}"></div>
+</div>
+{% endfor %}
+
+<script>
+let sentCount = 0;
+
+async function generatePitch(idx) {
+  const loadEl  = document.getElementById('loading-' + idx);
+  const pitchEl = document.getElementById('pitch-' + idx);
+  const sendEl  = document.getElementById('send-' + idx);
+  const errEl   = document.getElementById('err-' + idx);
+  
+  loadEl.style.display = 'block';
+  pitchEl.style.display = 'none';
+  sendEl.style.display  = 'none';
+  errEl.textContent = '';
+
+  try {
+    const res  = await fetch('/generate', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({idx})
+    });
+    const data = await res.json();
+    
+    if (data.error) {
+      errEl.textContent = 'Error: ' + data.error;
+      loadEl.style.display = 'none';
+      return;
+    }
+
+    document.getElementById('subj-' + idx).value = data.subject;
+    document.getElementById('body-' + idx).value  = data.body;
+    document.getElementById('words-' + idx).textContent = data.word_count + ' words (body only)';
+    
+    const srcEl = document.getElementById('src-' + idx);
+    srcEl.textContent = data.source.toUpperCase();
+    srcEl.className = 'source-badge source-' + data.source;
+
+    sendEl.href = data.gmail_url;
+    sendEl.style.display = 'block';
+    sendEl.onclick = () => {
+      sentCount++;
+      document.getElementById('sent-count').textContent = sentCount + ' Sent Today';
+    };
+    
+    pitchEl.style.display = 'block';
+  } catch(e) {
+    errEl.textContent = 'Network error. Try again.';
+  } finally {
+    loadEl.style.display = 'none';
+  }
+}
+</script>
 </body>
-</html>
-"""
+</html>"""
 
-# In-memory storage for generated drafts
-DRAFTS_CACHE = {}
-
-@app.route("/")
-def home():
-    leads = load_leads()
-    for l in leads:
-        em = l.get("email")
-        if em in DRAFTS_CACHE:
-            l["draft"] = DRAFTS_CACHE[em]
-    return render_template_string(HTML_TEMPLATE, leads=leads)
-
-@app.route("/generate_pitch", methods=["POST"])
-def generate_pitch():
-    biz = request.form.get("biz", "")
-    name = request.form.get("name", "")
-    email = request.form.get("email", "")
-    website = request.form.get("website", "")
-
-    researcher = WebsiteResearcher(firecrawl_api_key=os.getenv("FIRECRAWL_API_KEY", ""))
-    copywriter = AICopywriter(
-        gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
-        groq_api_key=os.getenv("GROQ_API_KEY", ""),
-        sender_name=os.getenv("SENDER_NAME", "Adegbite David")
-    )
-
-    site_data = researcher.research(website)
-    draft = copywriter.generate_draft(biz, name, site_data.get("text", ""))
-    DRAFTS_CACHE[email] = draft
-
-    leads = load_leads()
-    for l in leads:
-        em = l.get("email")
-        if em in DRAFTS_CACHE:
-            l["draft"] = DRAFTS_CACHE[em]
-
-    return render_template_string(HTML_TEMPLATE, leads=leads)
-
-@app.route("/send_email", methods=["POST"])
-def send_email():
-    to_email = request.form.get("to_email", "").strip()
-    subject = request.form.get("subject", "").strip()
-    body = request.form.get("body", "").strip()
-
-    sender_email = os.getenv("SENDER_EMAIL", "adegbiteishola001@gmail.com")
-    app_password = os.getenv("GMAIL_APP_PASSWORD", "")
-    sender_name = os.getenv("SENDER_NAME", "Adegbite David")
-    dry_run = os.getenv("DRY_RUN", "False").lower() in ("true", "1")
-
-    guard = SafetyGuard(sender_address=os.getenv("SENDER_ADDRESS", "Lagos, Nigeria"))
-    full_body = guard.append_can_spam_footer(body)
-
-    sender = GmailSender(sender_email, app_password, sender_name, dry_run=dry_run)
-    res = sender.send_email(to_email, subject, full_body)
-
-    msg = res.get("message") or res.get("error") or f"Successfully sent to {to_email}!"
-    success = res.get("success", False)
-
-    leads = load_leads()
-    for l in leads:
-        em = l.get("email")
-        if em in DRAFTS_CACHE:
-            l["draft"] = DRAFTS_CACHE[em]
-
-    return render_template_string(HTML_TEMPLATE, leads=leads, send_message=msg, send_success=success)
-
+# ── ENTRY POINT ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
